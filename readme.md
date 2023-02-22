@@ -1,380 +1,319 @@
-﻿# BlogAspNet MVC
+﻿# BlogAspNet
 
-Projeto para revisão de conceito e aprendizado, 
-seguindo a linha de refatoração do projeto [TodoAspNet](https://github.com/thiagokj/FirstTodoAspNetAPI)
+Projeto para revisão de conceito e aprendizado,
+continuação do projeto [BlogAspNet](https://github.com/thiagokj/BlogAspNet_Validations)
 
-Alguns exemplos iniciais sobre arquiteturas MVC e MVVM.
+Alguns exemplos iniciais sobre Autenticação e Autorização.
 
-## Nomeclatura de Endpoints
-
-A melhor prática é adotar as convenções de mercado para definição de nomes.
-
-**Endpoints:** usar texto minúsculo e no plural. Ex: [HttpGet("categorias")].
-Para nomes compostos utilize um hífen. Ex: [HttpGet("v1/user-roles")].
-
-**Versionamento:** para facilitar a manutenção, versione utilizando o prexifo v1, v2, v3, etc.
-Ex: [HttpGet("v1/categories")]
+## Requisitos
 
 ```Csharp
-using Blog.Data;
-using Microsoft.AspNetCore.Mvc;
+dotnet add package Microsoft.AspNetCore.Authentication
+dotnet add package Microsoft.AspNetCore.Authentication.JwtBearer
+```
 
-namespace BlogAspNet.Controllers
+## Autenticação e Autorização
+
+**Autenticação:** Identifica quem é o usuário.
+**Autorização:** Define o que é permitido pelo usuário.
+
+Nas novas aplicações Web E APIs, o usuário não fica logado. É feita uma autenticação a cada requisição.
+
+Resumo do processo:
+
+1. Temos um Endpoint (Url) onde são informadas as credenciais para autenticação (Ex: usuario e senha).
+1. As credenciais são transformadas em um Token (string longa encriptada).
+1. E o Token é enviado de volta para tela.
+
+A API faz o processo de verificar o Token com uma chave de acesso, decodificando a informação
+e devolvendo para o usuário, conforme sua autorização de acesso.
+
+O padrão de mercado é a utilização do Token JWT (pronuncia JÓTI), que é a notação para Json Web Token.
+
+```Csharp
+namespace BlogAspNet;
+public static class Configuration
 {
-    [ApiController]
-    public class CategoryController : ControllerBase
-    {
-        // A convenção para nomear Endpoints é usar texto minúsculo e no plural.
-        // Caso seja um nome composto, utilize um hífen como separador. Ex: post-categories.
-        [HttpGet("v1/categories")]
-        //[HttpGet("categorias")] // Poderia ter outro endpoint pt-br apontando para mesma rota.
-        public IActionResult Get(
-        [FromServices] BlogDataContext context)
+    // Chave codificada. Deve ser protegida e guardada no servidor.
+    public static string JwtKey { get; set; } = "AquiDeveSerInformadaUmaChaveCodificada";
+}
+```
+
+O próximo passo é criar um Serviço de Token para quem precisar gerar tokens.
+
+```Csharp
+public class TokenService
+{
+public string GenerateToken(User user)
+{
+// Manipulador de token
+var tokenHandler = new JwtSecurityTokenHandler();
+
+        // Retorna um array de bytes para passar ao tokenHandler
+        var key = Encoding.ASCII.GetBytes(Configuration.JwtKey);
+
+        // Contém as informações do token
+        var tokenDescriptor = new SecurityTokenDescriptor
         {
-            var categories = context.Categories.ToList();
-            return Ok(categories);
-        }
+            // Geramos acumulos de afirmações sobre um usuário
+            // com um objeto chave e valor do tipo Claim.
+            Subject = new ClaimsIdentity(new Claim[]
+            {
+                new (ClaimTypes.Name,"thiago"), // User.Identity.Name
+                new (ClaimTypes.Role,"admin"), // User.IsInRole
+                new ("possoPassar","qualquerValor")
+            }),
+            // Tempo de expiração para novo login do usuario
+            Expires = DateTime.UtcNow.AddHours(8),
+            // Forma de assinatura das credenciais,
+            // passando uma chave simétrica unica e exclusiva
+            SigningCredentials = new SigningCredentials(
+                new SymmetricSecurityKey(key),
+                SecurityAlgorithms.HmacSha256Signature
+            )
+        };
+
+        // Cria o token baseado nas configurações de geração
+        var token = tokenHandler.CreateToken(tokenDescriptor);
+        return tokenHandler.WriteToken(token);
+    }
+
+}
+```
+
+Agora é necessário um controlador para gerenciar a criação do Token
+
+```Csharp
+[ApiController]
+public class AccountController : ControllerBase
+{
+    [HttpPost("v1/login")]
+    public IActionResult Login()
+    {
+        var tokenService = new TokenService();
+        var token = tokenService.GenerateToken(null);
+
+        return Ok(token);
     }
 }
 ```
 
-**async/await:** Métodos assíncronos realizam tarefas paralelas, melhorando o fluxo
-de execução da aplicação. Dessa forma, não é necessario ficar aguardando o retorno
-de um processamento para iniciar outro, liberando recursos para demais tarefas.
+## Injeção de Dependência e Inversão de Controle
+
+Note que o haverão outros métodos que vão depender do tokenService. Então aproveitamos a
+técnica de **injeção de dependência** para informar ao Controller sobre essa dependência.
+
+O código pode ser alterado para essa forma:
 
 ```Csharp
-[HttpGet("v1/categories")]
-/*
-    Métodos assíncronos são executados em uma única thread. Eles liberam a thread
-    ativa para outras tarefas, enquanto uma operação de entrada/saída é executada.
-*/
-public async Task<IActionResult> GetAsync([FromServices] BlogDataContext context)
+public class AccountController : ControllerBase
 {
-    // O "await" pausa a execução do método até que a operação seja concluída.
-    var categories = await context.Categories.ToListAsync();
-    return Ok(categories);
+    // Cria a dependencia para ser resolvida posteriormente.
+    private readonly TokenService _tokenService;
+    public AccountController(TokenService tokenService)
+    {
+        _tokenService = tokenService;
+    }
+
+    [HttpPost("v1/login")]
+    public IActionResult Login()
+    {
+        var token = _tokenService.GenerateToken(null);
+
+        return Ok(token);
+    }...
+```
+
+E a declaração da dependência pode ser resumida com a chamada [FromServices]:
+
+```Csharp
+public class AccountController : ControllerBase
+{
+    [HttpPost("v1/login")]
+    // Sempre que o prefixo [FromServices] for declarado, significa que o
+    // método depende desse serviço.
+    public IActionResult Login([FromServices] TokenService tokenService)
+    {
+        var token = tokenService.GenerateToken(null);
+        return Ok(token);
+    }
 }
 ```
 
-## CRUD básico
+## AddScoped, AddTransient e AddSingleton
 
-Exemplo de CRUD básico com tratamento de exceções:
+O padrão utilizado por esses métodos é o padrão de injeção de dependência,
+que é uma técnica para gerenciar a criação e resolução de dependências entre diferentes
+partes de uma aplicação. A injeção de dependência ajuda a tornar o código mais modular,
+flexível e testável, permitindo que os serviços sejam facilmente substituídos e testados
+em isolamento.
 
 ```Csharp
- [ApiController]
-    public class CategoryController : ControllerBase
-    {
-        // Retorna todas as categorias
-        [HttpGet("v1/categories")]
-        public async Task<IActionResult> GetAsync([FromServices] BlogDataContext context)
-        {
-            try
-            {
-                var categories = await context.Categories.ToListAsync();
-                return Ok(categories);
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, "05XXE2 - Falha interna no servidor.");
-            }
-        }
+// Gerenciamento do ciclo de vida de serviços.
+// Cria uma nova instancia a cada chamada do serviço.
+builder.Services.AddTransient();
 
-        // Retorna categoria conforme id
-        [HttpGet("v1/categories/{id:int}")]
-        public async Task<IActionResult> GetByIdAsync(
-            [FromRoute] int id,
-            [FromServices] BlogDataContext context)
-        {
-            try
-            {
-                var category = await context
-                .Categories
-                .FirstOrDefaultAsync(x => x.Id == id);
+// Cria uma instância que dura até o fim de uma transação do serviço.
+builder.Services.AddScoped();
 
-                return category == null ? NotFound() : Ok(category);
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, "05XXE4 - Falha interna no servidor.");
-            }
-        }
-
-        // Insere uma nova categoria
-        [HttpPost("v1/categories")]
-        public async Task<IActionResult> PostAsync(
-            [FromBody] Category model,
-            [FromServices] BlogDataContext context)
-        {
-            try
-            {
-                await context.Categories.AddAsync(model);
-                await context.SaveChangesAsync();
-
-                return Created($"v1/categories/{model.Id}", model);
-            }
-            catch (DbUpdateException ex)
-            {
-                return StatusCode(500, "5XXE5 - Não foi possível incluir a categoria.");
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, "5XXE6 - Falha interna no servidor.");
-            }
-
-        }
-
-        // Atualiza categoria conforme id
-        [HttpPut("v1/categories/{id:int}")]
-        public async Task<IActionResult> PutAsync(
-            [FromRoute] int id,
-            [FromBody] Category model,
-            [FromServices] BlogDataContext context)
-        {
-            try
-            {
-                var category = await context
-                    .Categories
-                    .FirstOrDefaultAsync(x => x.Id == id);
-
-                if (category == null) return NotFound();
-
-                category.Name = model.Name;
-                category.Slug = model.Slug;
-
-                context.Categories.Update(category);
-                await context.SaveChangesAsync();
-
-                return Ok(model);
-            }
-            catch (DbUpdateException ex)
-            {
-                return StatusCode(500, "05XXE7 - Não foi possível alterar a categoria.");
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, "05XXE8 - Falha interna no servidor.");
-            }
-
-        }
-        
-        // Exclui uma categoria
-        [HttpDelete("v1/categories/{id:int}")]
-        public async Task<IActionResult> DeleteAsync(
-            [FromRoute] int id,
-            [FromServices] BlogDataContext context)
-        {
-            try
-            {
-                var category = await context
-                    .Categories
-                    .FirstOrDefaultAsync(x => x.Id == id);
-
-                if (category == null) return NotFound();
-
-                context.Categories.Remove(category);
-                await context.SaveChangesAsync();
-
-                return Ok(category);
-            }
-            catch (DbUpdateException ex)
-            {
-                return StatusCode(500, "05XXE9 - Não foi possível excluir a categoria.");
-            }
-            catch (Exception ex)
-            {
-                return StatusCode(500, "05XXE10 - Falha interna no servidor.");
-            }
-        }
+// Cria somente uma instância na memória até que a aplicação seja encerreda.
+builder.Services.AddSingleton();
 ```
 
-## ViewModels - Modelo com base no input do usuário
+# Configurando autenticação e autorização
 
-São modelos baseados em visualizações. Uma ViewModel é uma convenção, uma adaptação do que
-seria uma visualização do usuário (tela html, app desktop, mobile...) para interação com as
-entradas de dados (inputs).
+Para fazer debug de tokens, pode ser utilizada a ferramenta [JWT IO](https://jwt.io/).
 
-Com a ViewModel, o método Post fica com a responsabilidade de informar apenas o necessário.
+Configure a aplicação para fazer a autenticação e autorização, seguindo sempre essa ordem.
 
 ```Csharp
-public class CreateCategoryViewModel
-{
-    public string Name { get; set; }
-    public string Slug { get; set; }
-}
+app.UseAuthentication();
+app.UseAuthorization();
+```
 
-...try
+No builder, declare as configurações para autenticar apenas uma API:
+
+```Csharp
+var key = Encoding.ASCII.GetBytes(Configuration.JwtKey);
+builder.Services.AddAuthentication(x =>
 {
-    var category = new
+    x.DefaultAuthenticateScheme = JwtBearerDefaults.AuthenticationScheme;
+    x.DefaultChallengeScheme = JwtBearerDefaults.AuthenticationScheme;
+}).AddJwtBearer(x =>
+{
+    x.TokenValidationParameters = new TokenValidationParameters
     {
-        Id = 0,
-        Name = model.Name,
-        Slug = model.Slug.ToLower()
+        ValidateIssuerSigningKey = true,
+        IssuerSigningKey = new SymmetricSecurityKey(key),
+        ValidateIssuer = false,
+        ValidateAudience = false
     };
-
-    await context.Categories.AddAsync(category);
-    await context.SaveChangesAsync();
-
-    return Created($"v1/categories/{category.Id}", category);
-}...
+});
 ```
 
-Se as informações de Criação e Edição forem as mesmas, pode ser criada apenas
-uma representação de um EditorCategoryViewModel.
+Para fazer testes, crie métodos com as anotações permitindo ou restringindo o acesso
+com base no token.
 
 ```Csharp
-// Alteração no tipo da model no Put
-public async Task<IActionResult> PutAsync(
-            [FromRoute] int id,
-            [FromBody] EditorCategoryViewModel model,
-            [FromServices] BlogDataContext context)
-            {
-            // O Asp.Net faz a verificação automatica do ModelState baseado nas validações
-            // informadas no modelo. Essa validação pode ser desabilitada para criação de 
-            // retorno padronizado via builder.Services
-            if (!ModelState.IsValid) return BadRequest();
-            ...
-```
-
-Uma grande vantagem de utilizar os ViewModels são as validações, que podem ser tratadas
-de forma exclusiva para telas, já seguindo uma abordagem Data Driven (Orientado a dados).
-```Csharp
- public class EditorCategoryViewModel
-    {
-        [Required(ErrorMessage = "O nome é obrigatório.")]
-        [StringLength(40, MinimumLength = 3,
-            ErrorMessage = "Esse campo deve conter entre 3 e 40 caracteres.")]
-        public string Name { get; set; }
-
-        [Required]
-        public string Slug { get; set; }
-        ...
-```
-
-## Padronização de retorno
-
-Uma boa prática é padronizar os retornos da API para tratamento de dados e erros.
-Para isso, pode ser criada uma classe genérica ResultViewModel.
-
-```Csharp
-public class ResultViewModel<T>
-    {
-        public T Data { get; private set; }
-        public List<string> Errors { get; private set; } = new(); // Inicializa a lista
-
-        public ResultViewModel(T data, List<string> errors)
-        {
-            Data = data;
-            Errors = errors;
-        }...
-    }
-```
-
-No Builder, podemos desabilitar o retorno padrão da ModelState e usar o ResultViewModel.
-
-```Csharp
-builder.Services
-    .AddControllers()
-    .ConfigureApiBehaviorOptions(options =>
-    {
-        options.SuppressModelStateInvalidFilter = true;
-    });
-```
-
-Adicionando o padrão de retorno temos:
-
-```Csharp
-[HttpGet("v1/categories")]
-public async Task<IActionResult> GetAsync([FromServices] BlogDataContext context)
+[AllowAnonymous] // Anotação para não exigir autenticação e gerar token
+[HttpPost("v1/login")]
+public IActionResult Login([FromServices] TokenService tokenService)
 {
-    try
-    {
-        var categories = await context.Categories.ToListAsync();
-
-        // Retorna um objeto OK com uma instância da estrutura
-        // ResultViewModel<List<Category>>,
-        // que encapsula a lista de categorias do tipo Category.    
-        return Ok(new ResultViewModel<List<Category>>(categories));
-    }
-    catch
-    {
-        return StatusCode(500,
-            new ResultViewModel<List<Category>>("05XXE2 - Falha interna no servidor."));
-    }
+    var token = tokenService.GenerateToken(null);
+    return Ok(token);
 }
 
-[HttpGet("v1/categories/{id:int}")]
-public async Task<IActionResult> GetByIdAsync(
-    [FromRoute] int id,
-    [FromServices] BlogDataContext context)
-{
-    try
-    {
-        var category = await context
-        .Categories
-        .FirstOrDefaultAsync(x => x.Id == id);
+[Authorize(Roles = "user")] // Anotação exige token com permissão para o perfil de usuário
+[HttpGet("v1/user")]
+public IActionResult GetUser() => Ok(User.Identity.Name);
 
-        if (category == null)
-            // Retorna erro na estrutura ResultViewModel
-            return NotFound(new ResultViewModel<Category>("Contéudo não encontrado"));
+[Authorize(Roles = "author")]
+[HttpGet("v1/author")]
+public IActionResult GetAuthor() => Ok(User.Identity.Name);
+```
+
+Para tratamento de senhas, o ideal é utilizar um pacote que preve encriptação, salt e hashes.
+Toda lógica de segurança deve ser aplicada para mitigar os riscos de acesso indevido e vazamentos.
+Adicione ao projeto o pacote **dotnet add package SecureIdentity**
+
+```Csharp
+[HttpPost("v1/accounts/")]
+    public async Task<IActionResult> Post(
+        [FromBody] RegisterViewModel model,
+        [FromServices] BlogDataContext context
+    )
+    {
+        // Verifica se o modelo é valido
+        if (!ModelState.IsValid)
+            return BadRequest(new ResultViewModel<string>(ModelState.GetErrors()));
         
-        // Retorna uma categoria na estrutura do ResultViewModel.
-        return Ok(new ResultViewModel<Category>(category));
+        var user = new User
+        {
+            Name = model.Name,
+            Email = model.Email,
+            Slug = model.Email.Replace("@", "-").Replace(".", "-")
+        };
+
+        // Gera uma senha aleatória e faz o hash único (codifica).
+        var password = PasswordGenerator.Generate(25);
+        user.PasswordHash = PasswordHasher.Hash(password);
+
+        try
+        {
+            await context.Users.AddAsync(user);
+            await context.SaveChangesAsync();
+
+            return Ok(new ResultViewModel<dynamic>(new
+            {
+                user = user.Email,
+                password
+            }));
+        }
+        catch (DbUpdateException)
+        {
+            return StatusCode(400,
+                new ResultViewModel<string>("A84F2X - Email já cadastrado."));
+        }
+        catch
+        {
+            return StatusCode(500,
+                new ResultViewModel<string>("512XX - Falha interna do servidor."));
+        }
     }
-    catch
-    {
-        return StatusCode(500,
-            new ResultViewModel<Category>("05XXE4 - Falha interna no servidor."));
-    }
+```
+
+# Implementando uma ApiKey
+
+Para consumir a api por outras aplicações, sem a necessidade de realizar novos logins após
+a expiração de um token de acesso, pode ser criada uma chave API para acesso seguro.
+
+Para isso, deve ser criado um **Attribute**. Os atributos no C# são as **decorations**(anotações)
+que declaramos acima de classes e métodos.
+
+```Csharp
+public static class Configuration
+{
+...
+    /*
+        Chave secreta de autenticação para liberar o acesso a API, sem a necessidade de
+        passar pelos métodos de autorização. Deve se tomar todas as medidas de segurança,
+        evitando o vazamento dessa chave.
+    */
+    public static string ApiKeyName = "chave_api";
+    public static string ApiKey = "AsudhauidhuiAHDiuhadui";
 }
 ```
 
-## Extension Methods
-
-Continuando as validações, podemos aproveitar os recursos do Asp.Net para criar métodos de extensão.
-
-O metódo de extensão consiste em criar uma classe e adicionar métodos que 
-fazem processos mais específicos, incluindo a palavra reservada this antes de declarar
-o tipo do objeto.
-
-Por padrão no C#, uma classe de extensão deve ser estática.
-
 ```Csharp
-public static class ModelStateExtension
+// Define o atributo personalizado
+[AttributeUsage(AttributeTargets.Class | AttributeTargets.Method)]
+public class ApiKeyAttribute : Attribute, IAsyncActionFilter
 {
-    // Adicionado "this" no prefixo do retorno, representando um método de extensão.
-    public static List<string> GetErros(this ModelStateDictionary modelState)
+    public async Task OnActionExecutionAsync(ActionExecutingContext context, ActionExecutionDelegate next)
     {
-        var result = new List<string>();
-        foreach (var item in modelState.Values)
+        // Se não houver a api na configuração, retorna erro.
+        if (!context.HttpContext.Request.Query.TryGetValue(Configuration.ApiKeyName, out var extractedApiKey))
         {
-            foreach (var error in item.Errors)
+            context.Result = new ContentResult()
             {
-                result.Add(error.ErrorMessage);
-            }
+                StatusCode = 401,
+                Content = "ApiKey não encontrada"
+            };
+            return;
         }
 
-        return result;
+        // Se a chave informada não for a esperada, não permite o acesso.
+        if (!Configuration.ApiKey.Equals(extractedApiKey))
+        {
+            context.Result = new ContentResult()
+            {
+                StatusCode = 403,
+                Content = "Acesso não autorizado"
+            };
+            return;
+        }
+
+        await next();
     }
 }
 ```
-
-Agora é possivel chamar o método base com a extensão adicionada.
-
-```Csharp
- [HttpPost("v1/categories")]
-        public async Task<IActionResult> PostAsync(
-            [FromBody] EditorCategoryViewModel model,
-            [FromServices] BlogDataContext context)
-        {
-
-            if (!ModelState.IsValid)
-            {
-                // Agora o ModelState pode invocar o método extendido GetErrors().
-                return BadRequest(new ResultViewModel<Category>(ModelState.GetErrors()));
-            }...
-```
-
-
-
-
-

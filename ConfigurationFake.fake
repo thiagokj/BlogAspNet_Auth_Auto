@@ -1,0 +1,10 @@
+﻿namespace BlogAspNet;
+public static class ConfigurationFake
+{
+    // Chave encriptada protegida e guardada no servidor.
+    public static string JwtKey { get; set; } = "NTUzM0VFREUtOEUzNi00QUEZZyLThQWEEqweasddsfq2w324xkh5";
+
+    public static string ApiKeyName = "nome_da_chave";
+    public static string ApiKey = "curso_api_chave_codificada";
+}
+

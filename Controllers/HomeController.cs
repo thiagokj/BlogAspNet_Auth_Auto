@@ -1,4 +1,5 @@
-﻿using Microsoft.AspNetCore.Mvc;
+﻿using BlogAspNet_Improvement.Attributes;
+using Microsoft.AspNetCore.Mvc;
 
 namespace BlogAspNet.Controllers
 {
@@ -8,6 +9,7 @@ namespace BlogAspNet.Controllers
     {
         // Método comum apenas para testar se a API está online.
         [HttpGet("")]
+        [ApiKey]
         public IActionResult Get()
         {
             return Ok();
